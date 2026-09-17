@@ -1,0 +1,6 @@
+2026/09/17-09:12:47.863 1720 Reusing MANIFEST D:\facebook_analyzer\data\facebook_group_account_2\Default\IndexedDB\https_www.facebook.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/09/17-09:12:47.864 1720 Recovering log #3
+2026/09/17-09:12:47.932 1720 Reusing old log D:\facebook_analyzer\data\facebook_group_account_2\Default\IndexedDB\https_www.facebook.com_0.indexeddb.leveldb/000003.log 
+2026/09/17-09:17:55.261 1720 Level-0 table #5: started
+2026/09/17-09:17:55.344 1720 Level-0 table #5: 2051474 bytes OK
+2026/09/17-09:17:55.412 1720 Delete type=0 #3

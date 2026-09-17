@@ -1,0 +1,21 @@
+# Dữ liệu Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Môi trường ảo (nếu có)
+venv/
+env/
+.venv/
+
+# Cấu hình và biến môi trường
+.env
+.st/
+
+# Cơ sở dữ liệu SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# Dữ liệu profile trình duyệt Chromium/Facebook
+facebook/data/browser_profile/

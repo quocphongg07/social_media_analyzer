@@ -1,0 +1,5 @@
+2026/09/14-00:11:11.933 3c44 Reusing MANIFEST D:\facebook_analyzer\data\facebook_chrome_profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/09/14-00:11:11.944 3c44 Recovering log #38
+2026/09/14-00:11:11.945 3c44 Level-0 table #40: started
+2026/09/14-00:11:11.976 3c44 Level-0 table #40: 17232 bytes OK
+2026/09/14-00:11:12.101 3c44 Delete type=0 #38

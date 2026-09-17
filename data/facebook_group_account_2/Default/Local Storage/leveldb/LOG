@@ -1,0 +1,16 @@
+2026/09/17-09:32:59.651 2768 Reusing MANIFEST D:\facebook_analyzer\data\facebook_group_account_2\Default\Local Storage\leveldb/MANIFEST-000001
+2026/09/17-09:32:59.660 2768 Recovering log #22
+2026/09/17-09:32:59.661 2768 Level-0 table #25: started
+2026/09/17-09:32:59.688 2768 Level-0 table #25: 27125 bytes OK
+2026/09/17-09:32:59.689 2768 Recovering log #24
+2026/09/17-09:32:59.692 2768 Reusing old log D:\facebook_analyzer\data\facebook_group_account_2\Default\Local Storage\leveldb/000024.log 
+2026/09/17-09:32:59.735 2768 Delete type=0 #22
+2026/09/17-09:32:59.736 106c Compacting 4@0 + 1@1 files
+2026/09/17-09:32:59.832 106c Generated table #26@0: 2964 keys, 129474 bytes
+2026/09/17-09:32:59.833 106c Compacted 4@0 + 1@1 files => 129474 bytes
+2026/09/17-09:32:59.887 106c compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/09/17-09:32:59.888 106c Delete type=2 #16
+2026/09/17-09:32:59.888 106c Delete type=2 #18
+2026/09/17-09:32:59.888 106c Delete type=2 #20
+2026/09/17-09:32:59.888 106c Delete type=2 #23
+2026/09/17-09:32:59.888 106c Delete type=2 #25
