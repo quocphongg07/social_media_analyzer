@@ -24,13 +24,7 @@ class PostService:
     def get_post(
         self,
         post_id: str,
-        post_url: str | None = None,
     ):
-        # Browser client cần biết Group ID khi người dùng nhập trực tiếp
-        # một Post URL thay vì đi từ tab Phân tích Group.
-        if post_url and hasattr(self.client, "set_post_url_context"):
-            self.client.set_post_url_context(post_url)
-
         data = self.client.get_post(
             post_id
         )
@@ -43,11 +37,7 @@ class PostService:
         limit: int = 100,
         reaction_weight: float = 1.0,
         reply_weight: float = 2.0,
-        post_url: str | None = None,
     ) -> list[dict[str, Any]]:
-
-        if post_url and hasattr(self.client, "set_post_url_context"):
-            self.client.set_post_url_context(post_url)
 
         raw_comments = (
             self.client.get_post_comments(
@@ -91,6 +81,14 @@ class PostService:
                 ),
                 "replies": comment.get(
                     "replies",
+                    0,
+                ),
+                "parent_comment_id": comment.get(
+                    "parent_comment_id",
+                    "",
+                ),
+                "depth": comment.get(
+                    "depth",
                     0,
                 ),
             })

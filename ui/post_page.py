@@ -1,5 +1,7 @@
 import streamlit as st
 
+from analyzer.comment_ranker import rank_comments
+from utils.datetime_utils import format_vietnam
 from facebook.post_service import PostService
 from utils.url_parser import (
     detect_url_type,
@@ -8,7 +10,7 @@ from utils.url_parser import (
 from exporters.excel import comments_to_excel
 from exporters.csv import comments_to_csv
 from exporters.json import data_to_json
-from .components import display_comment_table
+from .table_components import display_comment_table
 
 
 def render_post_page(
@@ -26,22 +28,8 @@ def render_post_page(
         key="post_input",
     )
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        limit = st.number_input(
-            "Số bình luận lấy về",
-            min_value=1,
-            max_value=500,
-            value=100,
-            step=1,
-            key="comment_limit",
-        )
-
-    with col2:
-        st.caption(
-            "Kết quả hiển thị = toàn bộ số bình luận thực tế lấy được."
-        )
+    limit = st.number_input('Số bình luận tối đa cần lấy', min_value=1, max_value=500,
+                            value=100, key='comment_limit')
 
     if st.button(
         "🔎 Phân tích bình luận",
@@ -65,7 +53,7 @@ def render_post_page(
                 )
                 return
 
-            post_id = extract_post_id(value)
+            post_id = value  # Preserve full group/permalink context for the browser.
 
         else:
             post_id = value
@@ -80,8 +68,7 @@ def render_post_page(
 
             try:
                 post = post_service.get_post(
-                    post_id,
-                    post_url=value if value.startswith(("http://", "https://")) else None,
+                    post_id
                 )
 
                 comments = (
@@ -90,7 +77,6 @@ def render_post_page(
                         limit=int(limit),
                         reaction_weight=reaction_weight,
                         reply_weight=reply_weight,
-                        post_url=value if value.startswith(("http://", "https://")) else None,
                     )
                 )
 
@@ -120,17 +106,17 @@ def render_post_page(
     if not comments:
         return
 
-    # Không cắt số lượng hiển thị: toàn bộ comments đã lấy được
-    # sẽ được xếp hạng và hiển thị.
-    ranked_comments = comments
+    post = st.session_state.get('current_post')
+    if post:
+        st.write(getattr(post, 'content', '') or '')
+        st.caption('Ngày đăng: ' + (format_vietnam(getattr(post, 'created_time', None)) or 'Chưa đọc được') + ' (UTC+7)')
+    filtered_comments = rank_comments(comments, reaction_weight, reply_weight)
 
     st.subheader(
-        f"🔥 {len(ranked_comments)} bình luận — xếp hạng theo điểm"
+        f"🔥 Kết quả: {len(filtered_comments)} bình luận"
     )
 
-    display_comment_table(
-        ranked_comments
-    )
+    filtered_comments = display_comment_table(filtered_comments, key='post_comments')
 
     st.divider()
 
@@ -142,7 +128,7 @@ def render_post_page(
         st.download_button(
             label="📊 Excel",
             data=comments_to_excel(
-                ranked_comments
+                filtered_comments
             ),
             file_name="facebook_comments.xlsx",
             mime=(
@@ -156,7 +142,7 @@ def render_post_page(
         st.download_button(
             label="📄 CSV",
             data=comments_to_csv(
-                ranked_comments
+                filtered_comments
             ),
             file_name="facebook_comments.csv",
             mime="text/csv",
@@ -167,7 +153,7 @@ def render_post_page(
         st.download_button(
             label="🧾 JSON",
             data=data_to_json(
-                ranked_comments
+                filtered_comments
             ),
             file_name="facebook_comments.json",
             mime="application/json",

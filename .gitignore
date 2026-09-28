@@ -19,3 +19,28 @@ env/
 
 # Dữ liệu profile trình duyệt Chromium/Facebook
 facebook/data/browser_profile/
+# Local environments and Python cache
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Browser sessions, collected data and logs
+/data/
+/logs/
+login_cookies.json
+login_storage_state.json
+
+# Local databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Credentials
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from utils.browser_session import profile_path, manual_login, restore_session
 from urllib.parse import urlparse
 from .parser import HOSTS, decode_payload, extract_posts, merge_post, parse_profile
+from utils.feed_loading import decode_feed, is_feed_response, advance_feed, FeedProgress
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -11,7 +13,7 @@ class ThreadsBrowserClient:
     """Observe JSON delivered to the browser; no private API replay or credentials in code."""
 
     def __init__(self, profile_dir=None, headless=False):
-        self.profile_dir = Path(profile_dir or ROOT / 'data' / 'threads_browser_profile').resolve()
+        self.profile_dir = Path(profile_dir or profile_path('threads')).resolve()
         self.headless = headless
 
     def collect(self, profile, limit=100, max_scrolls=40, wait_seconds=3,
@@ -29,13 +31,13 @@ class ThreadsBrowserClient:
                 host = urlparse(response.url).hostname or ''
                 if host not in HOSTS and not host.endswith('.threads.com') and not host.endswith('.threads.net'):
                     return
+                if not is_feed_response(response):
+                    return
                 if response.status in (401, 403, 429):
                     errors.append(response.status)
-                if response.request.resource_type not in {'xhr', 'fetch'}:
                     return
-                if 'json' in response.headers.get('content-type', ''):
-                    for payload in decode_payload(response.text()):
-                        ingest(payload)
+                for payload in decode_feed(response.text()):
+                    ingest(payload)
             except Exception:
                 # A cancelled/unrelated response must not abort the scan.
                 return
@@ -44,6 +46,7 @@ class ThreadsBrowserClient:
             context = pw.chromium.launch_persistent_context(str(self.profile_dir), headless=self.headless,
                         viewport={'width': 1440, 'height': 1000}, locale='en-US')
             try:
+                restore_session(context, self.profile_dir)
                 page = context.pages[0] if context.pages else context.new_page()
                 page.on('response', on_response)
                 page.goto(f'https://www.threads.com/@{username}', wait_until='domcontentloaded', timeout=60000)
@@ -52,7 +55,8 @@ class ThreadsBrowserClient:
                         progress(f'Bạn có {login_wait} giây để đăng nhập thủ công trong cửa sổ trình duyệt.')
                     page.wait_for_timeout(login_wait * 1000)
                     page.goto(f'https://www.threads.com/@{username}', wait_until='domcontentloaded', timeout=60000)
-                idle, previous = 0, 0
+                tracker = FeedProgress()
+                selector = f'a[href*="/@{username}/post/" i]'
                 reason = 'max_scrolls'
                 for step in range(max_scrolls):
                     page.wait_for_timeout(wait_seconds * 1000)
@@ -70,38 +74,23 @@ class ThreadsBrowserClient:
                     if len(found) >= limit:
                         reason = 'limit'
                         break
-                    idle = idle + 1 if len(found) == previous else 0
-                    previous = len(found)
-                    if idle >= 5:
+                    position = advance_feed(page, selector)
+                    if tracker.stalled(len(found), position):
                         reason = 'no_new_posts'
                         break
-                    # Wheel events also scroll a feed held in an overflow container.
-                    page.mouse.move(700, 700)
-                    page.mouse.wheel(0, 2200)
                 if not found:
                     raise RuntimeError('Không đọc được bài viết. Có thể cần đăng nhập, tài khoản riêng tư, '
                                        'bị giới hạn truy cập hoặc Threads đã đổi cấu trúc dữ liệu. '
-                                       'Nếu cần đăng nhập lại, chạy: python -m threads.cli --login. ')
+                                       'Nếu cần đăng nhập lại, bấm nút đăng nhập Threads trên web. ')
                 warnings = ['Kết quả chỉ gồm bài đọc được trong phiên quét; không khẳng định toàn bộ tài khoản.']
                 if errors:
                     warnings.append('Trang có phản hồi hạn chế truy cập (HTTP ' + ', '.join(map(str, sorted(set(errors)))) + ').')
                 if reason == 'no_new_posts':
-                    warnings.append('Dừng sau 5 lượt không có bài mới; chưa xác nhận đã đến cuối tài khoản.')
+                    warnings.append('Dừng sau 12 lượt không có bài mới và vị trí cuộn không đổi; chưa xác nhận đã hết bài.')
                 return {'username': username, 'posts': list(found.values())[:limit], 'stop_reason': reason,
                         'warnings': warnings, 'requested_limit': limit, 'source': 'threads_browser'}
             finally:
                 context.close()
 
     def login(self):
-        """Let the user sign in manually, then retain the dedicated profile."""
-        from playwright.sync_api import sync_playwright
-        self.profile_dir.mkdir(parents=True, exist_ok=True)
-        with sync_playwright() as pw:
-            context = pw.chromium.launch_persistent_context(str(self.profile_dir), headless=False,
-                        viewport={'width': 1440, 'height': 1000}, locale='en-US')
-            try:
-                page = context.pages[0] if context.pages else context.new_page()
-                page.goto('https://www.threads.com/', wait_until='domcontentloaded', timeout=60000)
-                input('Đăng nhập trong cửa sổ trình duyệt; sau khi xong quay lại terminal và nhấn Enter để lưu phiên: ')
-            finally:
-                context.close()
+        return manual_login('threads')

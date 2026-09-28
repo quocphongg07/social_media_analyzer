@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import re
+from copy import deepcopy
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 
@@ -148,16 +149,87 @@ class ProfileParser:
         self.target = target
         self.ids = {target['key']} if target['key'].isdigit() else set()
         self.stories, self.feedbacks = {}, {}
+        self.entities = {}
+
+    def ingest_response(self, payloads):
+        """Apply deferred GraphQL paths within ONE response, then parse the result.
+
+        Later timeline cards may arrive as a Story shell followed by header/body
+        fragments. Parsing each fragment alone loses both author and post ID.
+        Never reuse a path tree for a different network request.
+        """
+        tree = None
+        pending = []
+
+        def apply_patch(patch):
+            nonlocal tree
+            path = list(patch.get('path') or [])
+            if path and path[0] == 'data':
+                path = path[1:]
+            if tree is None:
+                return False
+            current = tree
+            try:
+                for part in path[:-1]:
+                    current = current[part]
+                if 'items' in patch:
+                    items = deepcopy(patch['items'])
+                    if path and isinstance(path[-1], int):
+                        if not isinstance(current, list) or path[-1] > len(current):
+                            return False
+                        for offset, item in enumerate(items):
+                            index = path[-1] + offset
+                            if index == len(current):
+                                current.append(item)
+                            else:
+                                current[index] = merge(current[index], item) if isinstance(item, dict) else item
+                    else:
+                        dest = current[path[-1]] if path else current
+                        dest.extend(items)
+                else:
+                    value = deepcopy(patch.get('data'))
+                    if not path:
+                        tree = merge(tree, value) if isinstance(tree, dict) and isinstance(value, dict) else value
+                    else:
+                        part = path[-1]
+                        if isinstance(current, list) and part == len(current):
+                            current.append(value)
+                        else:
+                            old = current.get(part) if isinstance(current, dict) else current[part]
+                            current[part] = merge(old, value) if isinstance(old, dict) and isinstance(value, dict) else value
+                return True
+            except (KeyError, IndexError, TypeError, AttributeError):
+                return False
+
+        for payload in payloads:
+            self.ingest(payload)
+            if not isinstance(payload, dict):
+                continue
+            if 'path' in payload:
+                pending.append(payload)
+            elif isinstance(payload.get('data'), (dict, list)):
+                tree = deepcopy(payload['data'])
+            pending.extend(p for p in payload.get('incremental', []) if isinstance(p, dict))
+            # Dependencies may arrive out of order in the same response.
+            while pending:
+                remaining = [patch for patch in pending if not apply_patch(patch)]
+                if len(remaining) == len(pending):
+                    break
+                pending = remaining
+            if tree is not None:
+                self.ingest(tree)
 
     def matches(self, actor):
         if str(actor.get('id', '')) in self.ids:
             return True
-        if str(actor.get('username', '')).lower() == self.target['key']:
-            return True
+        matched = str(actor.get('username', '')).lower() == self.target['key']
         try:
-            return parse_profile(actor.get('url', ''))['key'] == self.target['key']
+            matched = matched or parse_profile(actor.get('url', ''))['key'] == self.target['key']
         except (ValueError, AttributeError):
-            return False
+            pass
+        if matched and str(actor.get('id', '')).isdigit():
+            self.ids.add(str(actor['id']))
+        return matched
 
     def ingest(self, payload):
         # Identity can arrive after story fragments, so retain then resolve.
@@ -166,10 +238,20 @@ class ProfileParser:
                 ident = str(obj.get('id', ''))
                 if ident.isdigit():
                     self.ids.add(ident)
-            if obj.get('__typename') == 'Story' and obj.get('post_id'):
-                ident = str(obj['post_id'])
+            entity_id = str(obj.get('id') or '')
+            if (obj.get('__typename') == 'Story' or entity_id in self.entities) and entity_id:
+                self.entities[entity_id] = merge(self.entities.get(entity_id), obj)
+                obj = self.entities[entity_id]
+            if obj.get('__typename') == 'Story':
+                ident = str(obj.get('post_id') or '')
+                if not ident:
+                    # A permalink is evidence of a post ID; a Relay Story ID is not.
+                    link = post_link(obj.get('url')) or post_link(obj.get('permalink_url'))
+                    parsed = urlparse(link)
+                    match = re.search(r'/(?:posts|videos)/(\d+|pfbid[A-Za-z0-9]+)', parsed.path)
+                    ident = match.group(1) if match else parse_qs(parsed.query).get('story_fbid', [''])[0]
                 if re.fullmatch(r'[A-Za-z0-9_-]+', ident):
-                    self.stories[ident] = merge(self.stories.get(ident), obj)
+                    self.stories[ident] = merge(self.stories.get(ident), dict(obj, post_id=ident))
             fb = obj.get('feedback')
             if isinstance(fb, dict) and fb.get('id'):
                 ident = str(fb['id'])
@@ -180,6 +262,9 @@ class ProfileParser:
 
     def posts(self):
         result = []
+        # Resolve identity before filtering: later cards often carry only actor.id.
+        for story in self.stories.values():
+            self.matches(actor_of(story))
         for ident, story in self.stories.items():
             actor = actor_of(story)
             if not self.matches(actor):

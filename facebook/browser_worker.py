@@ -7,7 +7,7 @@ from pathlib import Path
 
 def perform(client, request):
     action = request['action']
-    if action not in {'login', 'get_group', 'get_group_posts', 'get_post', 'get_post_comments'}:
+    if action not in {'login', 'get_group', 'get_group_posts', 'get_post', 'get_post_comments', 'get_profile_comments'}:
         raise ValueError('Thao tác không hợp lệ.')
     if action == 'login':
         # The explicit web button requests replacing this dedicated session.
@@ -17,6 +17,10 @@ def perform(client, request):
         raise RuntimeError('Chưa đăng nhập Facebook. Không sử dụng dữ liệu demo.')
     if action == 'login':
         return {'logged_in': True}
+    if action == 'get_profile_comments':
+        return client._collect_post_comments(str(request['post_url']), max_comments=int(request['limit']),
+            max_rounds=min(100, max(30, int(request['limit']))),
+            expected_post_id=str(request.get('post_id') or ''))
     group_id = str(request.get('group_id') or '')
     if group_id.isdigit():
         type(client)._global_last_group_id = group_id
@@ -47,7 +51,8 @@ def main():
     try:
         request = json.loads(Path(args.request).read_text(encoding='utf-8'))
         from .browser_client import FacebookBrowserClient
-        client = FacebookBrowserClient(headless=False)
+        from utils.browser_session import profile_path
+        client = FacebookBrowserClient(headless=False, user_data_dir=str(profile_path('facebook')))
         value = perform(client, request)
         path = Path(args.output)
         tmp = path.with_suffix('.tmp')

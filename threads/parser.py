@@ -52,6 +52,33 @@ def decode_payload(text):
         return result
 
 
+def nested_count(sources, *keys):
+    """Find an exact public counter in a post object without reading quoted posts."""
+    wanted = set(keys)
+    stack = [(source, 0) for source in sources if isinstance(source, (dict, list))]
+    skipped = {
+        'quoted_post', 'reposted_post', 'quoted_post_data',
+        'reposted_post_data', 'reply_to_post',
+    }
+    while stack:
+        value, depth = stack.pop()
+        if depth > 6:
+            continue
+        if isinstance(value, list):
+            stack.extend((item, depth + 1) for item in value[:100])
+            continue
+        if not isinstance(value, dict):
+            continue
+        for key, child in value.items():
+            if key in wanted:
+                parsed = count(child)
+                if parsed is not None:
+                    return parsed
+            if key not in skipped and isinstance(child, (dict, list)):
+                stack.append((child, depth + 1))
+    return None
+
+
 def extract_posts(payload, username, include_replies=False):
     """Read post objects from page JSON; exclude embedded quotes/reposts."""
     stack = [payload]
@@ -82,17 +109,16 @@ def extract_posts(payload, username, include_replies=False):
                 except (TypeError, ValueError, OverflowError, OSError):
                     created = ''
                 def metric(*keys):
-                    for source in (item, info):
-                        for key in keys:
-                            v = count(source.get(key))
-                            if v is not None:
-                                return v
+                    for key in keys:
+                        value = nested_count((item, info), key)
+                        if value is not None:
+                            return value
                     return None
                 yield dict(post_id=code, post_url=f'https://www.threads.com/@{username}/post/{code}',
                            author_name=username, content=content, created_time=created,
                            likes=metric('like_count'), comments=metric('direct_reply_count', 'reply_count'),
-                           reposts=metric('repost_count'), quotes=metric('quote_count'),
-                           shares=metric('share_count'), is_reply=is_reply,
+                           reposts=metric('repost_count', 'reshare_count'), quotes=metric('quote_count'),
+                           shares=metric('share_count', 'send_count', 'share_and_send_count'), is_reply=is_reply,
                            collected_at=datetime.now(timezone.utc).isoformat(), source='threads_page_json')
         for key, value in item.items():
             if key not in {'quoted_post', 'reposted_post', 'quoted_post_data', 'reposted_post_data', 'reply_to_post'}:

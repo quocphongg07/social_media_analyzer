@@ -92,10 +92,12 @@ class FacebookBrowserClient(FacebookClient):
             viewport={"width": 1440, "height": 1000},
             locale="vi-VN",
             args=[
-                "--disable-blink-features=AutomationControlled",
                 "--disable-notifications",
             ],
         )
+
+        from utils.browser_session import restore_session
+        restore_session(self._context, self.user_data_dir)
 
         if self._context.pages:
             self._page = self._context.pages[0]
@@ -2140,6 +2142,8 @@ class FacebookBrowserClient(FacebookClient):
             )
 
             # Only comments belonging to the requested post.
+            if getattr(self, '_profile_comment_url', '') and not self._comment_belongs_to_post(comment_url, post_id):
+                continue
             if comment_url:
                 m = re.search(r"/groups/\d+/(?:posts|permalink)/(\d+)", comment_url, re.I)
                 if m and m.group(1) != str(post_id):
@@ -2149,13 +2153,23 @@ class FacebookBrowserClient(FacebookClient):
                 if f"comment_id={comment_id}" not in local:
                     continue
 
-            # depth=0 means a top-level comment.  Never interpret depth as reply count.
+            # Keep replies as individual rows. Facebook's displayed total often
+            # includes them, so discarding depth > 0 made collection appear to
+            # stop early.
             depth = node.get("depth")
             try:
-                if depth is not None and int(depth) != 0:
-                    continue
+                depth = max(0, int(depth or 0))
             except Exception:
-                pass
+                depth = 0
+            parent = node.get("parent_comment") or node.get("parent") or {}
+            parent_comment_id = ""
+            if isinstance(parent, dict):
+                parent_comment_id = str(
+                    parent.get("legacy_fbid") or parent.get("id") or ""
+                )
+            parent_comment_id = str(
+                node.get("parent_comment_id") or parent_comment_id or ""
+            )
 
             author_name = ""
             author = node.get("author")
@@ -2240,6 +2254,8 @@ class FacebookBrowserClient(FacebookClient):
                 "created_time": created_time,
                 "reactions": reactions,
                 "replies": replies,
+                "parent_comment_id": parent_comment_id,
+                "depth": depth,
             })
             seen_ids.add(comment_id)
 
@@ -2289,6 +2305,22 @@ class FacebookBrowserClient(FacebookClient):
                 results.append(url)
 
         return results
+
+    def _comment_belongs_to_post(self, url, post_id):
+        from urllib.parse import urlparse, urljoin, parse_qs
+        identified = self._extract_post_id_from_url(url)
+        if identified:
+            return str(identified) == str(post_id)
+        target = getattr(self, '_profile_comment_url', '')
+        if not target or not url:
+            return False
+        actual = urlparse(urljoin(target, url))
+        selected = urlparse(target)
+        # Support opaque pfbid permalinks only when the exact selected path matches.
+        return (actual.hostname in {'facebook.com', 'www.facebook.com', 'm.facebook.com', 'web.facebook.com'}
+                and '/posts/' in selected.path
+                and actual.path.rstrip('/') == selected.path.rstrip('/')
+                and bool(parse_qs(actual.query).get('comment_id')))
 
     def _parse_dom_comments(
         self,
@@ -2345,17 +2377,7 @@ class FacebookBrowserClient(FacebookClient):
                     if not match:
                         continue
 
-                    extracted_post = re.search(
-                        r"/(?:posts|permalink)/(\d+)",
-                        href,
-                        flags=re.I,
-                    )
-
-                    if (
-                        not extracted_post
-                        or extracted_post.group(1)
-                        != str(post_id)
-                    ):
+                    if not self._comment_belongs_to_post(href, post_id):
                         continue
 
                     comment_id = match.group(1)
@@ -2593,6 +2615,48 @@ class FacebookBrowserClient(FacebookClient):
     # COMMENT EXPANSION
     # ============================================================
 
+    def _select_all_comments(self) -> bool:
+        """Switch from "Most relevant" to "All comments" when available."""
+        page = self._ensure_browser()
+        menu_patterns = (
+            re.compile(r"^(most relevant|relevant|phù hợp nhất)$", re.I),
+            re.compile(r"^(newest|mới nhất)$", re.I),
+        )
+        all_patterns = (
+            re.compile(r"^(all comments|tất cả bình luận)$", re.I),
+            re.compile(r"^(all|tất cả)$", re.I),
+        )
+        for selector in ('[role="button"]', '[role="combobox"]'):
+            try:
+                choices = page.locator(selector)
+                for index in range(min(choices.count(), 80)):
+                    choice = choices.nth(index)
+                    if not choice.is_visible():
+                        continue
+                    label = self._clean_text(
+                        choice.get_attribute("aria-label") or choice.inner_text() or ""
+                    )
+                    if not any(pattern.search(label) for pattern in menu_patterns):
+                        continue
+                    choice.click(timeout=3000)
+                    page.wait_for_timeout(700)
+                    for option_selector in ('[role="menuitem"]', '[role="option"]'):
+                        options = page.locator(option_selector)
+                        for option_index in range(min(options.count(), 30)):
+                            option = options.nth(option_index)
+                            if not option.is_visible():
+                                continue
+                            option_label = self._clean_text(
+                                option.get_attribute("aria-label") or option.inner_text() or ""
+                            )
+                            if any(pattern.search(option_label) for pattern in all_patterns):
+                                option.click(timeout=3000)
+                                page.wait_for_timeout(1200)
+                                return True
+            except Exception:
+                continue
+        return False
+
     def _click_comment_expansion_controls(self) -> int:
         """Click controls that load more comments/replies.
 
@@ -2602,16 +2666,19 @@ class FacebookBrowserClient(FacebookClient):
         """
         page = self._ensure_browser()
         patterns = [
-            re.compile(r"view\s+more\s+comments?|more\s+comments?", re.I),
-            re.compile(r"xem\s+thêm\s+bình\s+luận|xem\s+thêm\s+comment", re.I),
-            re.compile(r"view\s+more\s+repl(?:y|ies)|more\s+repl(?:y|ies)", re.I),
-            re.compile(r"xem\s+thêm\s+(?:câu\s+)?trả\s+lời", re.I),
+            re.compile(r"(?:view|see|show)\s+(?:all\s+)?(?:\d+[\s,.]*)?(?:more\s+|previous\s+)?comments?", re.I),
+            re.compile(r"(?:more|previous)\s+comments?", re.I),
+            re.compile(r"xem\s+(?:tất\s+cả\s+)?(?:thêm\s+)?(?:\d+[\s,.]*)?(?:các\s+)?bình\s+luận", re.I),
+            re.compile(r"xem\s+(?:các\s+)?bình\s+luận\s+trước", re.I),
+            re.compile(r"(?:view|see|show)\s+(?:all\s+)?(?:\d+[\s,.]*)?(?:more\s+)?repl(?:y|ies)", re.I),
+            re.compile(r"xem\s+(?:tất\s+cả\s+)?(?:thêm\s+)?(?:\d+[\s,.]*)?(?:câu\s+)?trả\s+lời", re.I),
+            re.compile(r"xem\s+(?:thêm\s+)?(?:\d+[\s,.]*)?phản\s+hồi", re.I),
         ]
         clicked = 0
         seen_labels: set[str] = set()
 
         # First inspect semantic buttons/links.
-        for selector in ('[role="button"]', 'a[role="button"]', 'button'):
+        for selector in ('[role="button"]', 'a[role="button"]', 'button', 'div[tabindex="0"]'):
             try:
                 locator = page.locator(selector)
                 count = min(locator.count(), 120)
@@ -2627,7 +2694,7 @@ class FacebookBrowserClient(FacebookClient):
                     )
                     if not label or label.lower() in seen_labels:
                         continue
-                    if "most relevant" in label.lower() or label.lower() in {"like", "comment", "share", "reply"}:
+                    if label.lower() in {"like", "comment", "share", "reply", "thích", "bình luận", "chia sẻ", "trả lời"}:
                         continue
                     if not any(p.search(label) for p in patterns):
                         continue
@@ -2753,6 +2820,7 @@ class FacebookBrowserClient(FacebookClient):
         post_id: str,
         max_comments: int = 100,
         max_rounds: int = 12,
+        expected_post_id: str | None = None,
     ) -> list[dict[str, Any]]:
         page = self._ensure_browser()
 
@@ -2771,29 +2839,43 @@ class FacebookBrowserClient(FacebookClient):
         if input_post_id:
             post_id = input_post_id
 
-        group_id = (
-            input_group_id
-            if input_group_id.isdigit()
-            else self._extract_group_id(current_url)
-        )
-
-        if not group_id.isdigit():
-            group_id = FacebookBrowserClient._global_last_group_id
-
-        if not group_id.isdigit():
-            print(
-                "[!] Không xác định được Group ID "
-                "khi lấy comments. "
-                "Hãy truyền Post URL có Group ID hoặc chạy phân tích Group trước."
+        from urllib.parse import urlparse
+        parsed_input = urlparse(post_input)
+        is_profile_post = parsed_input.scheme in {'http', 'https'} and '/groups/' not in parsed_input.path
+        if is_profile_post:
+            if parsed_input.hostname not in {'facebook.com', 'www.facebook.com', 'm.facebook.com', 'web.facebook.com'} or parsed_input.username or parsed_input.password or parsed_input.port:
+                raise ValueError('Link bài viết phải thuộc Facebook.')
+            if not input_post_id and not expected_post_id:
+                raise ValueError('Chưa xác định được ID bài viết để đọc bình luận.')
+            post_id = str(expected_post_id or input_post_id)
+            # A profile post must never inherit a previously scanned group ID.
+            post_url = post_input
+            self._profile_comment_url = post_url
+        else:
+            self._profile_comment_url = ''
+            group_id = (
+                input_group_id
+                if input_group_id.isdigit()
+                else self._extract_group_id(current_url)
             )
-            return []
 
-        FacebookBrowserClient._global_last_group_id = group_id
+            if not group_id.isdigit():
+                group_id = FacebookBrowserClient._global_last_group_id
 
-        post_url = self._canonical_post_url(
-            group_id,
-            str(post_id),
-        )
+            if not group_id.isdigit():
+                print(
+                    "[!] Không xác định được Group ID "
+                    "khi lấy comments. "
+                    "Hãy truyền Post URL có Group ID hoặc chạy phân tích Group trước."
+                )
+                return []
+
+            FacebookBrowserClient._global_last_group_id = group_id
+
+            post_url = self._canonical_post_url(
+                group_id,
+                str(post_id),
+            )
 
         print()
         print("=" * 70)
@@ -2815,6 +2897,9 @@ class FacebookBrowserClient(FacebookClient):
                 pass
 
             self._wait_page(3500)
+
+        if self._select_all_comments():
+            print("[+] Đã chuyển sang chế độ Tất cả bình luận.")
 
         comments: list[dict[str, Any]] = []
         seen_comment_ids: set[str] = set()
@@ -2954,16 +3039,17 @@ class FacebookBrowserClient(FacebookClient):
 
                 break
 
-            # Đã đạt expected.
+            # The count exposed in the current Story can describe only the
+            # currently selected relevance batch.  Record it for diagnostics,
+            # but do not use it as a hard stop when the user requested more.
             if (
                 expected >= 0
                 and len(comments) >= expected
             ):
                 print(
-                    "[+] Đã thu đủ số comments "
-                    "Facebook công bố."
+                    "[+] Đã đạt số comments Facebook đang công bố; "
+                    "tiếp tục tải cho đến giới hạn người dùng."
                 )
-                break
 
             # ----------------------------------------
             # EXPAND
@@ -2977,15 +3063,18 @@ class FacebookBrowserClient(FacebookClient):
                 f"[Expand] Clicked: {clicked}"
             )
 
-            if new_count == 0 and clicked == 0:
+            # A visible button can remain in the DOM after it has already been
+            # clicked.  Counting that stale button as progress kept the worker
+            # alive indefinitely and prevented Streamlit from receiving rows.
+            if new_count == 0:
                 no_new_rounds += 1
             else:
                 no_new_rounds = 0
 
             # Do not stop too early: Facebook often needs several scroll/click
             # cycles before exposing the next comment batch.
-            if no_new_rounds >= 5:
-                print("[+] 5 vòng liên tiếp không có comment mới.")
+            if no_new_rounds >= 6:
+                print("[+] 6 vòng liên tiếp không có comment mới; trả kết quả và đóng trình duyệt.")
                 break
 
             self._wait_page(1800)
@@ -3014,17 +3103,16 @@ class FacebookBrowserClient(FacebookClient):
         print("=" * 70)
 
         if expected >= 0:
-            if len(comments) >= expected:
+            if len(comments) >= max_comments:
                 print(
                     f"HOÀN TẤT COMMENTS: "
-                    f"{len(comments)} / "
-                    f"{expected}"
+                    f"{len(comments)} / giới hạn {max_comments}"
                 )
             else:
                 print(
                     f"COMMENTS THU ĐƯỢC: "
                     f"{len(comments)} / "
-                    f"{expected}"
+                    f"Facebook đang hiển thị {expected}"
                 )
                 print(
                     "[!] Chưa thể khẳng định "
@@ -3061,7 +3149,7 @@ class FacebookBrowserClient(FacebookClient):
         return self._collect_post_comments(
             post_id=str(post_id),
             max_comments=limit,
-            max_rounds=20,
+            max_rounds=min(100, max(30, limit)),
         )
 
 

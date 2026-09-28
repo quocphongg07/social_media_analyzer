@@ -1,29 +1,7 @@
-import json
-from typing import Any
+from .common import json_bytes
 
+def data_to_json(data):
+    return json_bytes(data)
 
-def data_to_json(
-    data: list[dict[str, Any]],
-) -> bytes:
-    return json.dumps(
-        data,
-        ensure_ascii=False,
-        indent=2,
-    ).encode("utf-8")
-
-
-def analysis_to_json(
-    posts: list[dict[str, Any]],
-    comments: list[dict[str, Any]],
-) -> bytes:
-
-    data = {
-        "posts": posts,
-        "comments": comments,
-    }
-
-    return json.dumps(
-        data,
-        ensure_ascii=False,
-        indent=2,
-    ).encode("utf-8")
+def analysis_to_json(posts, comments):
+    return json_bytes(dict(posts=posts, comments=comments, timezone="Asia/Ho_Chi_Minh"))

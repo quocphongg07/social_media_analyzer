@@ -6,7 +6,9 @@ import sys
 import tempfile
 import time
 
-import pandas as pd
+from ui.table_components import display_ranked_table
+from ui.comments_panel import render_comments_panel
+from ui.browser_runner import run_browser_action
 import streamlit as st
 from threads.parser import METRICS, parse_profile
 from threads.service import rank_posts
@@ -55,7 +57,7 @@ def rank_collected_posts(posts, weights):
     ranked = rank_posts(posts, weights, include_incomplete=True)
     known, unknown = [], []
     for row in ranked:
-        if any(row.get(k) is not None and weights.get(k, 0) > 0 for k in METRICS):
+        if not any(weights.values()) or any(row.get(k) is not None and weights.get(k, 0) > 0 for k in METRICS):
             known.append(row)
         else:
             row.update(engagement_score=None, rank=None, score_status='unavailable')
@@ -65,8 +67,16 @@ def rank_collected_posts(posts, weights):
     return known + unknown
 
 
-def render_threads_page(like_weight, comment_weight, share_weight):
+def render_threads_page(like_weight, comment_weight, share_weight, browser_client, reaction_weight=1.0, reply_weight=2.0):
     st.header('Phân tích tài khoản Threads')
+    if st.button('Đăng nhập / đổi tài khoản Threads', key='threads_login_in_tab'):
+        try:
+            run_browser_action('login', platform='threads')
+            for state_key in ('threads_result', 'threads_comment_result', 'threads_selected_post'):
+                st.session_state.pop(state_key, None)
+            st.success('Đã lưu phiên Threads mới. Bây giờ bạn có thể thu thập dữ liệu.')
+        except Exception as exc:
+            st.error(str(exc))
     st.caption('Nhập link và số bài cần lấy. Chương trình dùng lại phiên đăng nhập trình duyệt đã lưu.')
     profile = st.text_input('Link tài khoản Threads', placeholder='https://www.threads.com/@username', key='threads_profile')
     limit = st.number_input('Số bài viết tối đa cần lấy', min_value=1, max_value=500,
@@ -75,6 +85,7 @@ def render_threads_page(like_weight, comment_weight, share_weight):
         try:
             username = parse_profile(profile)
             st.session_state.pop('threads_result', None)
+            st.session_state.pop('threads_comment_result', None)
             result = collect_in_worker(username, int(limit), 200, 0, False, st.empty())
             result['requested_limit'] = int(limit)
             st.session_state['threads_result'] = result
@@ -89,7 +100,7 @@ def render_threads_page(like_weight, comment_weight, share_weight):
     if not result or result.get('source') != 'threads_browser':
         return
     weights = dict(likes=like_weight, comments=comment_weight,
-                   reposts=share_weight, quotes=share_weight, shares=0.0)
+                   reposts=share_weight, quotes=share_weight, shares=share_weight)
     try:
         rows = rank_collected_posts(result['posts'], weights)
     except ValueError as exc:
@@ -114,8 +125,8 @@ def render_threads_page(like_weight, comment_weight, share_weight):
     for warning in result.get('warnings', []):
         if warning != 'Kết quả chỉ gồm bài đọc được trong phiên quét; không khẳng định toàn bộ tài khoản.':
             st.warning(warning)
-    st.caption('Xếp hạng trong tập bài đã thu thập. Like và Comment dùng trọng số ở thanh bên; '
-               'Repost và Quote dùng trọng số Share. Share riêng của Threads có trọng số 0.')
+    st.caption('Xếp hạng trong tập bài đã thu thập. Like và Comment dùng trọng số tương ứng; '
+               'Repost, Quote và Share đều dùng trọng số Share ở thanh bên.')
     st.caption('Ô trống là chỉ số chưa đọc được. Điểm partial là điểm tạm tính; '
                'bài chưa có chỉ số nào dùng để tính điểm được để trống điểm và thứ hạng.')
     if not rows:
@@ -123,12 +134,7 @@ def render_threads_page(like_weight, comment_weight, share_weight):
         return
     columns = ['rank', 'content', 'likes', 'comments', 'reposts', 'quotes', 'shares',
                'engagement_score', 'score_status', 'created_time', 'post_url']
-    frame = pd.DataFrame(rows)[columns]
-    for name in ['rank', 'likes', 'comments', 'reposts', 'quotes', 'shares']:
-        frame[name] = pd.array(frame[name], dtype='Int64')
-    st.dataframe(frame, use_container_width=True, hide_index=True,
-                 column_config={'post_url': st.column_config.LinkColumn('Link bài viết')})
-    st.caption(f'Bảng có {len(rows)} dòng. Cuộn bên trong bảng để xem các bài phía dưới.')
+    rows = display_ranked_table(rows, columns, 'threads_table')
     metadata = {k: v for k, v in result.items() if k != 'posts'}
     metadata.update(weights=weights, include_incomplete=True, export_count=len(rows))
     a, b, c = st.columns(3)
@@ -137,3 +143,12 @@ def render_threads_page(like_weight, comment_weight, share_weight):
     b.download_button('Tải Excel', to_excel(rows), stem + '.xlsx',
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', key='threads_xlsx')
     c.download_button('Tải JSON', to_json(rows, metadata), stem + '.json', 'application/json', key='threads_json')
+
+    def fetch(post, count):
+        return run_browser_action(
+            'threads_comments',
+            url=post['post_url'],
+            limit=count,
+            timeout=900,
+        )
+    render_comments_panel(rows, 'threads', fetch, reaction_weight, reply_weight)
