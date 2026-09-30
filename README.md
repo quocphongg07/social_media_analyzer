@@ -1,5 +1,5 @@
-Đây là một phần mềm (hoặc có thể gọi là tool) để rà quét các bài viết trên nhóm Facebook và tài khoản cá nhân Threads.
-**Khởi chạy chương trình**
+Đây là một phần mềm (hoặc có thể gọi là tool) để rà quét các bài viết trên nhóm Facebook và tài khoản cá nhân Threads.  
+**Khởi chạy chương trình**  
 Trong code, mở terminal trong thư mục chính, chạy lệnh:
 - .venv\Scripts\Activate.ps1 để khởi tạo môi trường
 - python -m streamlit run app.py để chạy chương trình  
